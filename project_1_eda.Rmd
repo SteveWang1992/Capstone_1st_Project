@@ -1,0 +1,370 @@
+---
+title: "Captone 1st Project: Exploratory Analysis of Raw Text"
+author: "Rui Wang"
+date: "3/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Outline
+
+This project is the first part of the entire natural language processing capstone project. The core purpose of this project is exploratory data analysis for the raw text files that would be used in later NLP modeling. I would display all the basic information of the three raw text files in this project, clean the raw text data, and extract the summary statistics from them. I also would display basic relationships exist in our text datasets in various way.
+
+Report Structures Listed Below:
+
+1. Loading Raw Text Files
+2. Cleaning and Tidying Datasets 
+3. Exploratory Data Analysis - basic tokenization
+
+## Loading Raw Text Files
+
+The core datasets for our NLP modeling would be the English ones, which include blogs, news, twitter, three different type text data. Becuase the raw text files were pretty large, I would load `tictoc` package to help readers better estimate how much time loading data probably costs. `readLines` function would be used for reading raw text files, and `skipNul` would be set as `TRUE`, which would exclude most missing data in loading procedure. Meanwhile, I stored all the raw text data into a list to keep all of them organized.
+
+```{r Check_Raw_File_Length}
+# Load the tictoc package for time monitoring purpose
+library(tictoc)
+
+# Locate the file parent folder for data loading
+prefix <- "/Users/steve/Desktop/datascience-JHU/Capstone_Project/final/en_US"
+raw_file_list <- dir(prefix)
+
+# Create the file_load function for loading the data we need during this project
+raw_text_load <- function(prefix, file_name) {
+    con <- file(file.path(prefix, file_name))
+    raw_text <- readLines(con, skipNul = TRUE)
+    close(con)
+    return(raw_text)
+}
+
+# Create the vector for holding the raw text file length, file size, and file content
+length_check_vec <-rep(NA, length(raw_file_list))
+filesize_check_vec <-rep(NA, length(raw_file_list))
+data_list <- lapply(raw_file_list, function(x) NA)
+
+# Using for loop to load all the raw files and get the length of each file, also monitoring the
+# the loading time
+for (i in seq_along(raw_file_list)) {
+    tic(paste(raw_file_list[i], i))
+    raw_text <- raw_text_load(prefix, raw_file_list[i])
+    toc()
+    length_check_vec[i] <- length(raw_text)
+    filesize_check_vec[i] <- format(object.size(raw_text), units = "Mb")
+    data_list[[i]] <- raw_text
+}
+
+
+for (pattern in c("en_US\\.", ".txt")) {
+    raw_file_list <- gsub(pattern, replacement = "", raw_file_list)
+}
+
+names(length_check_vec) <- raw_file_list
+names(filesize_check_vec) <- raw_file_list
+names(data_list) <- raw_file_list
+
+length_check_vec
+```
+
+Raw Text File Specification:
+
+- The `en_US.blogs.txt` is **`r filesize_check_vec[1]`**, and contains **`r length_check_vec[1]`** rows.
+
+- The `en_US.news.txt` is **`r filesize_check_vec[2]`**, and contains **`r length_check_vec[2]`** rows.
+
+- The `en_US.twitter.txt` is **`r filesize_check_vec[3]`**, and contains **`r length_check_vec[3]`** rows.
+
+The raw text data transformation and cleaning would be the next step after data loading procedure. 
+`tibble` is a great choice to store the raw text data, and `line` variable would be introduced as index for each text data entry. `glimpse` would help readers better understand what does each data table look like after transformation. 
+
+```{r Tibble_Transform, message=FALSE}
+library(tidyr)
+library(dplyr)
+
+# Create the transform_to_tibble function for data transformation
+tranform_to_tibble <- function(raw_text) {
+    text_tibble <- tibble(line = seq_along(raw_text),
+                          text = raw_text)
+    print(format(object.size(text_tibble), units = "Mb"))
+    return(text_tibble)
+}
+
+# Using lapply to transform all loaded raw text data
+data_list <- lapply(data_list, tranform_to_tibble)
+names(data_list) <- raw_file_list
+
+# Check the three different dataframe using glimpse
+for(data in data_list) glimpse(data)
+```
+
+## Data Partition, Cleaning and Basic Tokenization
+
+After the transformation, all raw text data were loaded and stored as `tibble` format (a more efficient dataframe used in tidyverse than R's data.frame) in our work space. We could bascially think `line` variable as unique id or index for each corresponding text entry in each dataframe. 
+
+### Data Partition - set training set
+
+Before any cleaning procedure, and exploratory data analysis, I would firstly split the entire data set into training set, and testing set. All the cleaning and exploratory data analysis would just be implemented on training set, and leave the test set for natural language processing modeling purpose. 
+
+The eaiest way for us to split the data is using `rbinom` to simulate a coin flip, and I could choose how much data will be ramdomly choosed by setting `prob` argument in `rbinom`. In this project, **80/20** partition rules will be followed,  which means 80% percent data of entire dataset will be set as training dataset, and the left 20% percent data will be set as testing dataset.
+
+```{r Data_Partition}
+# create get_train_data function to split data using rbinom
+get_train_data <- function(text_df, percent = 0.8) {
+    train_index <- as.logical(rbinom(nrow(text_df), 1, prob = percent))
+    text_df[train_index, ]
+}
+
+# set seed for reproducible purpose and using lapply to transform all three text datasets
+set.seed(2020)
+data_list <- lapply(data_list, get_train_data)
+names(data_list) <- raw_file_list
+
+# Check each data frame after the partition
+for (data in data_list) glimpse(data)
+```
+
+### Data Cleaning and Basic Tokenization
+
+Now, each line in the dataset represents one blog, or one piece of news, or one twitter. If I would like to get specific words information, or filter stop words and profane words from our dataset, I need to tokenize our text data, literally using unigram concept. `tidytext` package is really handy for this purpose. By combining `tidytext` with `dplyr`, and later with `ggplot2`, I could easily tokenize all the text entry for each line in the dataframe, and transform them into the tidy text format, which would be very helpful to extract summary statistics or create visualization.
+
+Firstly, I would combine three different dataframe (blogs, news, twitter) into one dataframe, and add variable `tag` for source distinction. And then check word counts from original raw text.
+
+```{r basic_word_tokenization_without_filtering}
+# Load tidytext package for tokenization purpose
+library(tidytext)
+
+# Using lapply and mutate add tag variable for each dataframe
+train_df <- lapply(seq_along(data_list), function(i) data_list[[i]] %>% mutate(tag = names(data_list)[i]))
+# And then combine three datasets together
+train_df <- do.call(bind_rows, train_df)
+
+# unigram tokenization
+train_df_1gram <- train_df %>% 
+    unnest_tokens(word, text)
+
+# Count words for each tag
+word_count_unfilter <- train_df_1gram %>% count(tag)
+
+word_count_unfilter
+```
+
+From the previous result, we knew that twitter dataset has significantly more rows than the other twos, but from above raw text word counts results, we found out blogs dataset acutally has most words, news comes as second, and twitter has least words in total. So a assumption that blogs should have more words for each line (text entry), compared to news and twitter is reasonable.
+
+To test our assumption, I would use histogram to display the word count distribution for each raw text file.
+
+```{r word_count_no_filter_histogram, message=FALSE, fig.height=9, fig.width=9}
+library(ggplot2)
+
+# Creating histogram based on each tag category
+train_df_1gram %>%
+    count(tag, line, sort = TRUE) %>%
+    ggplot(aes(x = n)) +
+    geom_histogram() +
+    facet_wrap(~ tag, scales = "free", nrow = 3) + 
+    labs(title = "Histogram By Tag Without Filtering")
+```
+
+From the raw text word counts distribution, we could easily draw the conculsion that, all three word counts distribution are highly positively skewed. Compared to our assumption, twitter indeed has least words for each line (or each data entry) on average, but news obviously has most words for each line, and blogs come second. 
+
+Above histogram just showed how word counts of raw text data distributed, but we probably want to filter some stop words and profane words, and check how the real meaningful text part performs.
+
+### Profane Words List From Google
+
+I found Google profane word list through [GitHub](https://github.com/RobertJGabriel/Google-profanity-words), and `tidytext` also has really good `stop_words` dataset, which could be customed conveniently. I could filter out the stop words, and profane words, then check the text data left for each tag.
+
+```{r Load_Profane_Word_List}
+# Load profane word data
+profane_prefix <- "/Users/steve/Desktop/datascience-JHU/Capstone_Project/capstone_alpha_project/final"
+profane_word_vec <- raw_text_load(profane_prefix, file_name = "list.txt")
+
+# custom stop words
+profane_df<- tibble(word = profane_word_vec, lexicon = rep("CUSTOM", length(profane_word_vec)))
+word_filter_df <- bind_rows(profane_df, stop_words)
+
+# Filter the stop words and profane words
+train_df_1gram_filtered <- train_df_1gram %>%
+    anti_join(word_filter_df, by = "word")
+
+word_count_filter <- train_df_1gram_filtered %>% count(tag)
+
+word_count_filter
+```
+
+I also redid the histogram, and checked whether the distributions change after filtering.
+
+```{r word_count_filter_histogram, fig.height=9, fig.width=9}
+# Creating histogram based on each tag category
+train_df_1gram_filtered %>%
+    count(tag, line, sort = TRUE) %>%
+    ggplot(aes(x = n)) +
+    geom_histogram(fill = "red") +
+    facet_wrap(~ tag, scales = "free", nrow = 3) + 
+    labs(title = "Histogram By Tag With Filtering")
+```
+
+From the filtered word counts distribution, we could see that the twitter's word count distribution changed obviously, which means filtering procedure is very necessary for later exploratory text data analysis.
+
+## Exploratory Data Analysis
+
+The EDA part structure:
+
+- Filtering Comparision
+- Unigram
+- Bigram
+
+### Filtering Comparision
+
+Now we had both unfiltered data (raw text data tidy in dataframe format and being tokenized using unigram) and filtered data(filtered stop words and profane words based on the unfiltered data), so comparision of total word count would be very easy.
+
+```{r total_word_count_comparision, fig.width=9}
+# Count word in unfiltered dataset and filtered dataset respectively
+word_count_unfilter <- train_df_1gram %>% count(tag)
+word_count_filter <- train_df_1gram_filtered %>% count(tag)
+
+# Left join two dataset together
+left_join(word_count_unfilter, word_count_filter, by = "tag") %>%
+    # reshape the combined dataset into tidy format
+    gather(key = "filter_condition", value = "n",-tag) %>%
+    # transform the filter_condition into factor variable
+    mutate(filter_condition = factor(
+        filter_condition,
+        level = c("n.x", "n.y"),
+        labels = c("Before Filter", "After Filter")
+    )) %>% 
+    ggplot(aes(x = tag, y = n, fill = filter_condition)) +
+    geom_col(position = "dodge") + 
+    scale_fill_brewer("Filter Condition", palette = "Set1") + 
+    labs(x = "", y = "Count", title = "Before Filter VS After Filter") + 
+    theme(legend.position = "bottom")
+```
+
+### Unigram
+
+From the above barplot, we could see that there is dramatic decrease in total word count after we filtering out stop words and profane words from the raw text. So the text data cleaning procedure would help improve the efficiency of future computation and make both the result of EDA and NLP model more reliable and more trustworthy.
+
+Clearly, the language written styles among blogs, news, and twitters are very different with each other. But there are also a lot of common aspects shared among them The easiest way for us to explore the differences is using word frequency. 
+
+```{r top_10_word_by_tag, fig.height=6, fig.width=9}
+library(stringr)
+
+# Create word frequency barplot using ggplot2
+train_df_1gram_filtered %>% 
+    filter(str_detect(word, pattern = "\\d+", negate = TRUE)) %>% 
+    count(tag, word, sort = TRUE) %>% 
+    group_by(tag) %>% 
+    top_n(10) %>% 
+    ungroup() %>% 
+    ggplot(aes(x = reorder(word, n), y = n)) + 
+    geom_col() + 
+    facet_wrap(~ tag, scales = "free") + 
+    coord_flip()
+```
+
+The limitation of barplot to display the word frequency is the number of word could be displayed in one plot. So word cloud might present a better visualization on word frequency data, which could give readers a more vivid picture of the hot words in the dataset. `wordcloud2` is a very handy package for tranforming the word frequency data into word cloud.
+
+*Word Frequency Data Word Cloud of The Entire Corpus* Included All Three Tags
+
+```{r blog_word_cloud, fig.width=9}
+library(wordcloud2)
+# Blogs Word Cloud
+train_df_1gram_filtered %>% 
+    filter(str_detect(word, pattern = "\\d+", negate = TRUE)) %>% 
+    count(word, sort = TRUE) %>% 
+    filter(n >= 20) %>% 
+    rename(freq = n) %>% 
+    wordcloud2()
+```
+
+Another one of the greatest features embeded in `tidytext` package is the sentiment analysis capability. There are several sentiment datasets inside `tidytext`, and we could easily get the detailed information using `?get_sentiments`. Here, I choosed Bing sentiment dataset for quick sentiment analysis.
+
+The reason I used Bing dataset is that it has `sentiment` variable labeled positive words and negative words for us. And I could easily label the filtered dataset using Bing sentiment dataset, and calculate how much postive words or negative words in each tag category.
+
+```{r Sentiment_Analysis, fig.height=4, fig.width=9}
+# Load the Bing sentiment dataset
+bing_df <- get_sentiments(lexicon = "bing")
+
+# Load the scales package for customizing axes in ggplot2
+library(scales)
+
+# Pipe all the calc into ggplot2
+train_df_1gram_filtered %>% 
+    # Combine with sentiment datasets and get text labeled
+    inner_join(bing_df, by = "word") %>% 
+    # Count positive words and negative words in each tag
+    count(tag, sentiment, sort = TRUE) %>% 
+    group_by(tag) %>% 
+    # Get the percentage of positve word and negative words
+    mutate(total = sum(n), percent = n / total) %>% 
+    ggplot(aes(x = tag, y = percent, fill =  sentiment)) +
+    geom_col() +
+    geom_hline(yintercept = 0.5, color = "grey50", linetype = "dashed", size = 2) +
+    scale_fill_brewer("Sentiment", palette = "Set1", limits = c("positive", "negative")) + 
+    scale_y_continuous(labels = percent) + 
+    labs(x = "", y = "", title = "Postive VS Negative") + 
+    coord_flip() +
+    theme(legend.position = "bottom")
+```
+
+### Bigram
+
+All of the word frequency analysis I have done was based on unigram tokenization, which means I only need to consider single words. However, most time the unigram tokenization is not sufficient for text mining, even unigram tokenization is the fastest. Considered the raw text datasets I loaded into workspace, I would demonstrate the bigram tokenization only in this exploratory data analysis. 
+
+```{r Bigram_Tokenization}
+# Tokenize the raw text data using bigram and store the data into dataframe
+train_df_bigram_filtered <- train_df %>%
+    unnest_tokens(bigram, text, token = "ngrams", n = 2) %>%
+    separate(bigram, c("word1", "word2"), sep = " ") %>%
+    filter(!word1 %in% word_filter_df$word,
+    !word2 %in% word_filter_df$word, 
+    str_detect(word1, "\\d+", negate = TRUE), 
+    str_detect(word1, "\\d+", negate = TRUE))
+
+# Check out the top5 bigram combination in each tag category
+train_df_bigram_filtered %>% 
+    unite("bigram", word1, word2, sep = " ") %>% 
+    count(tag, bigram, sort = TRUE) %>% 
+    group_by(tag) %>% 
+    top_n(5, n) %>% 
+    ungroup()
+```
+
+Bigram is also the foundation of Markov chain theorey (if you are not familiar with Markov chain, you could easily find it through wikipedia). So network visualization might be a great way to demonstrate the relationship between different bigrams. I would use `igraph`, `tidygraph`, and `ggraph` to create network visualization below for readers understanding the bigram relationships exist in the datasets much easier.
+
+```{r Network_Visualization, message=FALSE, warning=FALSE, fig.height=9, fig.width=9}
+library(igraph)
+library(tidygraph)
+library(ggraph)
+
+train_df_bigram_filtered %>%
+    filter(
+    str_detect(word1, "\\s+", negate = TRUE),
+    str_detect(word2, "\\s+", negate = TRUE)
+    ) %>%
+    count(tag, word1, word2, sort = TRUE) %>%
+    filter(n >= 200) %>%
+    select(word1, word2, everything()) %>%
+    graph_from_data_frame() %>%
+    ggraph(layout = "grid") +
+    geom_edge_link(aes(edge_alpha = n, color = as.factor(tag)), show.legend = FALSE) +
+    geom_node_point(color = "lightblue", size = 2.5) +
+    geom_node_text(
+    aes(label = name),
+    size = 2.5,
+    vjust = 1.2,
+    hjust = 0.5,
+    alpha = 0.7
+    ) +
+    theme_void()
+```
+
+## Feed Backs To The NLP Modeling
+
+Based on the data cleaning results and exploratory data analysis, I would say that there is still a lot of details we need to polish when creating NLP models. Taking consideration of the raw text dataset size, a lot of algorithm optimization would be done during modeling procedure. And I also listed several useful feed backs below.
+
+- In Depth Tokenization
+
+- Correlation Between words
+
+- Fit More Robust Predicative Model For Different Language Style
+
